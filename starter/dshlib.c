@@ -7,23 +7,59 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <errno.h>
+
 #include "dshlib.h"
 
-/**
- * change_directory - Implements the cd builtin command
- * @cmd: Pointer to the command buffer structure
- *
- * When called with no arguments, cd does nothing.
- * When called with one argument, changes directory to the specified path.
- *
- * Returns: OK on success, ERR_EXEC_CMD on failure
+/*
+ * Implement your exec_local_cmd_loop function by building a loop that prompts the 
+ * user for input.  Use the SH_PROMPT constant from dshlib.h and then
+ * use fgets to accept user input.
+ * 
+ *      while(1){
+ *        printf("%s", SH_PROMPT);
+ *        if (fgets(cmd_buff, ARG_MAX, stdin) == NULL){
+ *           printf("\n");
+ *           break;
+ *        }
+ *        //remove the trailing \n from cmd_buff
+ *        cmd_buff[strcspn(cmd_buff,"\n")] = '\0';
+ * 
+ *        //IMPLEMENT THE REST OF THE REQUIREMENTS
+ *      }
+ * 
+ *   Also, use the constants in the dshlib.h in this code.  
+ *      SH_CMD_MAX              maximum buffer size for user input
+ *      EXIT_CMD                constant that terminates the dsh program
+ *      SH_PROMPT               the shell prompt
+ *      OK                      the command was parsed properly
+ *      WARN_NO_CMDS            the user command was empty
+ *      ERR_TOO_MANY_COMMANDS   too many pipes used
+ *      ERR_MEMORY              dynamic memory management failure
+ * 
+ *   errors returned
+ *      OK                     No error
+ *      ERR_MEMORY             Dynamic memory management failure
+ *      WARN_NO_CMDS           No commands parsed
+ *      ERR_TOO_MANY_COMMANDS  too many pipes used
+ *   
+ *   console messages
+ *      CMD_WARN_NO_CMD        print on WARN_NO_CMDS
+ *      CMD_ERR_PIPE_LIMIT     print on ERR_TOO_MANY_COMMANDS
+ *      CMD_ERR_EXECUTE        print on execution failure of external command
+ * 
+ *  Standard Library Functions You Might Want To Consider Using (assignment 1+)
+ *      malloc(), free(), strlen(), fgets(), strcspn(), printf()
+ * 
+ *  Standard Library Functions You Might Want To Consider Using (assignment 2+)
+ *      fork(), execvp(), exit(), chdir()
  */
+
+//CD Function to change directory
 int change_directory(cmd_buff_t *cmd) {
     if (cmd->argc == 1) {
-        // No arguments, do nothing per requirements
         return OK;
     } else if (cmd->argc == 2) {
-        // Change to the specified directory
+        //If correct num of args passed, cd to specified path
         if (chdir(cmd->argv[1]) != 0) {
             perror("cd");
             return ERR_EXEC_CMD;
@@ -32,12 +68,7 @@ int change_directory(cmd_buff_t *cmd) {
     return OK;
 }
 
-/**
- * match_command - Determines if a command is a builtin command
- * @input: The command string to check
- *
- * Returns: The appropriate Built_In_Cmds enum value
- */
+//Function to match command with built in commands located in dshlib.h
 Built_In_Cmds match_command(const char *input) {
     if (!input) return BI_NOT_BI;
     
@@ -52,155 +83,269 @@ Built_In_Cmds match_command(const char *input) {
     return BI_NOT_BI;
 }
 
-/**
- * build_cmd_buff - Parses a command line into a cmd_buff structure
- * @cmd_line: The command line string to parse
- * @cmd_buff: Pointer to the cmd_buff structure to populate
- *
- * This function handles quoted arguments by preserving spaces within quotes.
- *
- * Returns: OK on success, ERR_MEMORY on memory allocation failure
- */
+//Function to parse command line input
 int build_cmd_buff(char *cmd_line, cmd_buff_t *cmd_buff) {
-    // Trim leading spaces
-    while (isspace((unsigned char)*cmd_line)) cmd_line++;
-    
-    // Trim trailing spaces
+    //Trim leading whitespace
+    while (isspace((unsigned char)*cmd_line)) 
+        cmd_line++; 
+    //Trim trailing whitespace
     char *end = cmd_line + strlen(cmd_line) - 1;
     while (end > cmd_line && isspace((unsigned char)*end)) end--;
     *(end + 1) = '\0';
-    
-    // Initialize cmd_buff
-    cmd_buff->argc = 0;
+
+    //Duplicate the trimmed command line into our buffer
     cmd_buff->_cmd_buffer = strdup(cmd_line);
-    if (!cmd_buff->_cmd_buffer) return ERR_MEMORY;
-    
-    // Parse command line character by character to handle quotes
+    if (!cmd_buff->_cmd_buffer) 
+        return ERR_MEMORY;
+    cmd_buff->argc = 0;
+
+    //Take command line input and parse into tokens
     char *p = cmd_buff->_cmd_buffer;
-    
+    char *token_start = NULL;
     while (*p) {
-        // Skip spaces between tokens
-        while (*p && isspace((unsigned char)*p)) p++;
+        //Skip any whitespace between tokens
+        while (*p && isspace((unsigned char)*p))
+            p++;
         if (!*p) break;
-        
-        char *token_start;
+
+        //Check if we are at a pipe operator
+        if (*p == '|') {
+            //Insert the pipe token.
+            cmd_buff->argv[cmd_buff->argc++] = (char *)"|";
+            p++; 
+            continue;
+        }
         if (*p == '"') {
-            // Handle quoted string
-            p++; // Skip opening quote
+            //If the token starts with "", skip the opening quote
+            p++;
             token_start = p;
-            
-            // Find closing quote
-            while (*p && *p != '"') p++;
-            
-            // If we found a closing quote, terminate the token and move past it
+            //Read until we hit the closing quote
+            while (*p && *p != '"') {
+                p++;
+            }
+            //If a closing quote is found, terminate the token and move past it
             if (*p == '"') {
                 *p = '\0';
                 p++;
             }
-        } else {
-            // Handle normal token
-            token_start = p;
-            
-            // Find end of token (space or end of string)
-            while (*p && !isspace((unsigned char)*p)) p++;
-            
-            // If not at end of string, terminate token and move past it
-            if (*p) {
-                *p = '\0';
-                p++;
+            cmd_buff->argv[cmd_buff->argc++] = token_start;
+            continue;
+        }
+
+        //For unquoted tokens, record the start of the token and read until we hit a space or pipe
+        token_start = p;
+        while (*p && !isspace((unsigned char)*p) && *p != '|') {
+            p++;
+        }
+        //If a pipe is found, terminate the token and move past it
+        if (*p == '|') {
+            *p = '\0';
+            cmd_buff->argv[cmd_buff->argc++] = token_start;
+            continue;
+        } else if (*p) {  //Terminate the token if not end of string
+            *p = '\0';
+            cmd_buff->argv[cmd_buff->argc++] = token_start;
+            p++;
+        } else {  //End of string
+            cmd_buff->argv[cmd_buff->argc++] = token_start;
+        }
+    }
+    cmd_buff->argv[cmd_buff->argc] = NULL;
+    return OK;
+}
+
+//Function for executing the pipeline
+int execute_pipeline(cmd_buff_t *cmd) {
+    //Check if any pipe symbols are present in the command
+    int pipe_positions[CMD_MAX] = {0};
+    int pipe_count = 0;
+    int i;
+
+    //Find all pipe symbols and count them
+    for (i = 0; i < cmd->argc; i++) {
+        if (strcmp(cmd->argv[i], "|") == 0) {
+            pipe_positions[pipe_count++] = i;
+            if (pipe_count >= CMD_MAX - 1) {
+                fprintf(stderr, "Too many pipes. Maximum is %d\n", CMD_MAX - 1);
+                return ERR_TOO_MANY_COMMANDS;
+            }
+        }
+    }
+
+    //Use BUILT_IN_CMDs to match command with built in commands
+    if (pipe_count == 0) {
+        Built_In_Cmds cmd_type = match_command(cmd->argv[0]);
+        //If the command is CD run change_directory()
+        if (cmd_type == BI_CMD_CD) {
+            return change_directory(cmd);
+        } else if (cmd_type == BI_CMD_EXIT) {
+            printf("exiting...\n");
+            free(cmd->_cmd_buffer);
+            exit(OK_EXIT);
+        }
+        else if (cmd_type == BI_NOT_BI){
+            //Fork to duplicate parent process into a new child process
+            pid_t pid = fork();
+            if (pid == 0) {
+                //Execvp() to execute the command
+                if (execvp(cmd->argv[0], cmd->argv) == -1) {
+                    perror("execvp");
+                    exit(ERR_EXEC_CMD);
+                }
+            } else if (pid < 0) {
+                //Handle fork failure
+                perror("fork");
+                return ERR_EXEC_CMD;
+            } else {
+                //If fork is successful, wait for child process to finish
+                int status;
+                waitpid(pid, &status, 0);
+                if (WIFEXITED(status)) {
+                    return WEXITSTATUS(status);
+                }
+                return ERR_EXEC_CMD;
+
+            }
+        }
+    } else {
+        //If pipes are present in the command, execute the pipeline
+        int num_commands = pipe_count + 1;
+        int pipes[CMD_MAX - 1][2]; //Array of pipe file descriptors, one for each pipe
+        pid_t pids[CMD_MAX];       //Array to store child process IDs
+        
+        //Loop over num of pipes and create pipes
+        for (i = 0; i < pipe_count; i++) {
+            if (pipe(pipes[i]) == -1) {
+                perror("pipe");
+                return ERR_EXEC_CMD;
             }
         }
         
-        // Add token to argv array if not empty
-        if (token_start[0] != '\0') {
-            cmd_buff->argv[cmd_buff->argc++] = token_start;
-            if (cmd_buff->argc >= CMD_ARGV_MAX - 1) break;
+        int cmd_start = 0;
+        int cmd_end;
+        
+        for (i = 0; i < num_commands; i++) {
+            cmd_end = (i < pipe_count) ? pipe_positions[i] : cmd->argc;
+            
+            //Fork() to duplicate parent process into a new child process
+            pids[i] = fork();
+            
+            if (pids[i] == 0) {
+                //If the child process is successfull, set up stdin
+                //Use dup2() to replace stdin with the previous pipe
+                if (i > 0) {
+                    if (dup2(pipes[i-1][0], STDIN_FILENO) == -1) {
+                        perror("dup2");
+                        exit(ERR_EXEC_CMD);
+                    }
+                }
+                
+                //Uses dup2() to replace stdout with the next pipe
+                if (i < pipe_count) {
+                    if (dup2(pipes[i][1], STDOUT_FILENO) == -1) {
+                        perror("dup2");
+                        exit(ERR_EXEC_CMD);
+                    }
+                }
+                
+                //Close all pipes
+                for (int j = 0; j < pipe_count; j++) {
+                    close(pipes[j][0]);
+                    close(pipes[j][1]);
+                }
+                
+                char *cmd_args[CMD_ARGV_MAX];
+                int cmd_argc = 0;
+                
+                for (int j = cmd_start; j < cmd_end; j++) {
+                    cmd_args[cmd_argc++] = cmd->argv[j];
+                }
+                cmd_args[cmd_argc] = NULL;
+                
+                //Execvp() to execute the command
+                if (execvp(cmd_args[0], cmd_args) == -1) {
+                    perror("execvp");
+                    exit(ERR_EXEC_CMD);
+                }
+            } else if (pids[i] < 0) {
+                //If the child process fails, fork error
+                perror("fork");
+                
+                //Close all pipes if fork fails
+                for (int j = 0; j < pipe_count; j++) {
+                    close(pipes[j][0]);
+                    close(pipes[j][1]);
+                }
+                
+                return ERR_EXEC_CMD;
+            }
+            
+            cmd_start = cmd_end + 1;
         }
+        
+        //Close all pipes
+        for (int j = 0; j < pipe_count; j++) {
+            close(pipes[j][0]);
+            close(pipes[j][1]);
+        }
+        
+        //Wait for child processes to finish if fork is successful
+        int status;
+        int last_status = 0;
+        
+        for (i = 0; i < num_commands; i++) {
+            waitpid(pids[i], &status, 0);
+            if (WIFEXITED(status)) {
+                last_status = WEXITSTATUS(status);
+            }
+        }
+        
+        return last_status;
     }
-    
-    // Null-terminate argv array for execvp
-    cmd_buff->argv[cmd_buff->argc] = NULL;
     
     return OK;
 }
 
-/**
- * exec_local_cmd_loop - Main shell command loop
- *
- * Continuously prompts for and processes user commands until EOF or exit.
- * Handles built-in commands and executes external commands using fork/exec.
- *
- * Returns: The last command's return code
- */
+//Replaces main function in dsh_cli.c
+//Function for continously prompting user for input, parsing the input and executing the command
+//Uses fork() to create a child process to execute the command and execvp() to execute the command
 int exec_local_cmd_loop() {
     char cmd_line[SH_CMD_MAX];
     cmd_buff_t cmd;
     int rc = 0;
-    
-    // Main command loop
+
+    //Start loop prompting the user for input
     while (1) {
-        // Prompt user and read input
         printf("%s", SH_PROMPT);
+        fflush(stdout);
+
         if (fgets(cmd_line, SH_CMD_MAX, stdin) == NULL) {
             printf("\n");
             break;
         }
-        
-        // Remove trailing newline
+
         cmd_line[strcspn(cmd_line, "\n")] = '\0';
-        
-        // Check for exit command
+
         if (strcmp(cmd_line, EXIT_CMD) == 0) {
-            exit(OK);
+            printf("exiting...\n");
+            return OK;
         }
-        
-        // Parse command line
+
         rc = build_cmd_buff(cmd_line, &cmd);
         if (rc != OK) {
             fprintf(stderr, "Error parsing command\n");
             continue;
         }
-        
-        // Handle empty command
+
         if (cmd.argc == 0) {
             printf(CMD_WARN_NO_CMD);
             free(cmd._cmd_buffer);
             continue;
         }
-        
-        // Check for built-in commands
-        Built_In_Cmds cmd_type = match_command(cmd.argv[0]);
-        if (cmd_type == BI_CMD_CD) {
-            rc = change_directory(&cmd);
-        } else if (cmd_type == BI_CMD_EXIT) {
-            free(cmd._cmd_buffer);
-            exit(OK_EXIT);
-        } else if (cmd_type == BI_NOT_BI) {
-            // Execute external command using fork/exec
-            pid_t pid = fork();
-            
-            if (pid == 0) {
-                // Child process
-                if (execvp(cmd.argv[0], cmd.argv) == -1) {
-                    perror("execvp");
-                    exit(ERR_EXEC_CMD);
-                }
-            } else if (pid < 0) {
-                // Fork failed
-                perror("fork");
-            } else {
-                // Parent process
-                int status;
-                waitpid(pid, &status, 0);
-                if (WIFEXITED(status)) {
-                    rc = WEXITSTATUS(status);
-                }
-            }
-        }
-        
-        // Free allocated memory
+
+        rc = execute_pipeline(&cmd);
         free(cmd._cmd_buffer);
     }
-    
+
     return rc;
 }
